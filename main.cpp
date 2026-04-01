@@ -2,26 +2,28 @@
 COSC 3307 - Project: Interactive Fireworks Display
 Sana Begum | Nipissing University
 
-Scene: Night sky backdrop, Phong-shaded ground plane, particle-based fireworks.
+Scene: Textured ground plane, particle-based fireworks, dynamic lighting.
 
---- Phase 1 (50% complete) ---
+--- Phase 1 ---
 [x] GLFW window + GLEW + camera (identical setup to A2)
 [x] Particle pool: rockets fly upward then explode (Starburst type)
 [x] Physics: gravity, air drag, linear alpha fade, point-size shrink
 [x] Rendering: dynamic VBO updated per frame, GL_POINTS with additive blending
-[x] Circular glow shape via gl_PointCoord discard in fragment shader
+[x] Circular glow shape via gl_PointCoord in fragment shader
 [x] Ground plane with Phong shading (ambient + diffuse + specular)
 [x] Night-blue background
 [x] Camera controls (arrows, A/D roll, W/S move)
 [x] Keyboard launch (SPACE / 1) + auto-launch on startup
 
---- Phase 2 (TODO) ---
-[ ] Fountain, Rocket-with-trail, Cascade firework types
-[ ] Particle glow texture (SOIL) with alpha channel
-[ ] Ground texture (grass/concrete via SOIL)
-[ ] Skybox sphere with gradient night texture
-[ ] Dynamic point lights attached to active particle clusters
-[ ] Multi-firework orchestration / choreography timing
+--- Phase 2 ---
+[x] Fountain firework type (key 2): continuous narrow-cone ground emitter
+[x] Rocket-with-Trail firework type (key 3): rocket emits trail sparks, then starburst
+[x] Cascade firework type (key 4): burst spawns secondary mini-rockets
+[x] Procedural ground texture (dark-green grass grid, generated in C++)
+[x] Procedural particle glow texture (64x64 circular alpha gradient)
+[x] Dynamic point lights: active explosion positions light the ground (up to 8)
+[x] Multi-firework choreography: auto-launch timer cycles all four types
+[ ] Skybox sphere (night-sky gradient + star field) -- in progress
 
 Controls:
   Arrow Up/Down   : Pitch camera
@@ -29,6 +31,9 @@ Controls:
   A / D           : Roll camera
   W / S           : Move forward / backward
   SPACE or 1      : Launch starburst firework
+  2               : Launch fountain firework
+  3               : Launch rocket-with-trail firework
+  4               : Launch cascade firework
   Q               : Quit
 */
 
@@ -53,6 +58,7 @@ Controls:
 #include <vector>
 #include <cstdlib>
 #include <ctime>
+#include <cmath>
 
 // -----------------------------------------------------------------------
 // IMPORTANT: Change this path to point to Project_Fireworks/resource/ on YOUR machine.
@@ -63,7 +69,7 @@ Controls:
     std::cerr << exception_object.what() << std::endl
 
 // Window
-const std::string window_title_g  = "COSC 3307 - Interactive Fireworks Display  [Phase 1]";
+const std::string window_title_g  = "COSC 3307 - Interactive Fireworks Display";
 const unsigned int window_width_g  = 900;
 const unsigned int window_height_g = 700;
 const glm::vec3 background_g(0.01f, 0.01f, 0.06f); // deep night blue
@@ -73,7 +79,7 @@ float camera_near_clip_g = 0.1f;
 float camera_far_clip_g  = 3000.0f;
 float camera_fov_g       = 60.0f;
 
-// View and projection matrices
+// View and projection matrices (updated each frame)
 glm::mat4 view_matrix, projection_matrix;
 
 // GLFW window and camera
@@ -83,11 +89,19 @@ Camera*     camera;
 // Particle system
 ParticleSystem* particleSys;
 
-// Static scene light (world space) — single ambient overhead light for ground
+// Static scene light (world space)
 glm::vec3 scene_light_pos_g(0.0f, 200.0f, 100.0f);
 
 // Delta-time tracking
 double lastTime_g = 0.0;
+
+// Procedural GPU textures
+GLuint ground_tex_g        = 0;
+GLuint particle_glow_tex_g = 0;
+
+// Choreography state
+double choreo_next_time_g = 2.0;
+int    choreo_idx_g       = 0;
 
 // -----------------------------------------------------------------------
 // Geometry handle — same typedef as A2
@@ -99,11 +113,12 @@ typedef struct Geometry {
     GLuint size;
 } Geometry;
 
-// Ground vertex: position + normal (texcoords added in Phase 2)
+// Ground vertex: position + normal + UV texcoord
 struct GroundVertex {
-    glm::vec3 pos;    // offset  0 — 12 bytes
-    glm::vec3 normal; // offset 12 — 12 bytes
-};
+    glm::vec3 pos;     // offset  0 — 12 bytes
+    glm::vec3 normal;  // offset 12 — 12 bytes
+    glm::vec2 uv;      // offset 24 —  8 bytes
+};                     // total  32 bytes
 
 // -----------------------------------------------------------------------
 // Shader utilities — identical to A2
@@ -181,16 +196,92 @@ void LoadShaderInt(GLuint shader, int val, std::string name) {
 }
 
 // -----------------------------------------------------------------------
+// CreateGroundTexture
+// 128x128 procedural dark-green grass — generated entirely in C++.
+// -----------------------------------------------------------------------
+GLuint CreateGroundTexture() {
+    const int W = 128, H = 128;
+    unsigned char pixels[W * H * 3];
+
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            int i = (y * W + x) * 3;
+            float nx = (float)x / (float)W;
+            float ny = (float)y / (float)H;
+            float v  = 0.5f + 0.5f * sinf(nx * 37.0f) * cosf(ny * 31.0f);
+            bool onGrid = (x % 16 == 0) || (y % 16 == 0);
+            if (onGrid) {
+                pixels[i+0] = 28;
+                pixels[i+1] = 62;
+                pixels[i+2] = 20;
+            } else {
+                pixels[i+0] = (unsigned char)(10  + v * 22);
+                pixels[i+1] = (unsigned char)(32  + v * 52);
+                pixels[i+2] = (unsigned char)(8   + v * 18);
+            }
+        }
+    }
+
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, W, H, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    return tex;
+}
+
+// -----------------------------------------------------------------------
+// CreateParticleGlowTexture
+// 64x64 RGBA circular glow (bright centre, transparent edges).
+// -----------------------------------------------------------------------
+GLuint CreateParticleGlowTexture() {
+    const int W = 64, H = 64;
+    unsigned char pixels[W * H * 4];
+    float cx = W * 0.5f, cy = H * 0.5f;
+
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            int   i    = (y * W + x) * 4;
+            float dx   = (x - cx) / cx;
+            float dy   = (y - cy) / cy;
+            float dist = sqrtf(dx*dx + dy*dy);
+            float t    = 1.0f - glm::clamp(dist, 0.0f, 1.0f);
+            float v    = t * t;
+            pixels[i+0] = 255;
+            pixels[i+1] = 255;
+            pixels[i+2] = 255;
+            pixels[i+3] = (unsigned char)(v * 255.0f);
+        }
+    }
+
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    return tex;
+}
+
+// -----------------------------------------------------------------------
 // CreateGroundPlane — large quad at y = 0, normal pointing up
+// Vertex now includes UV texcoords (tiled 20x across the plane)
 // -----------------------------------------------------------------------
 Geometry* CreateGroundPlane(float halfSize = 300.0f) {
     const glm::vec3 up(0.0f, 1.0f, 0.0f);
+    const float     tileCount = 20.0f;
 
     GroundVertex verts[4] = {
-        { glm::vec3(-halfSize, 0.0f, -halfSize), up },
-        { glm::vec3( halfSize, 0.0f, -halfSize), up },
-        { glm::vec3( halfSize, 0.0f,  halfSize), up },
-        { glm::vec3(-halfSize, 0.0f,  halfSize), up },
+        { glm::vec3(-halfSize, 0.0f, -halfSize), up, glm::vec2(0.0f,       0.0f)      },
+        { glm::vec3( halfSize, 0.0f, -halfSize), up, glm::vec2(tileCount,  0.0f)      },
+        { glm::vec3( halfSize, 0.0f,  halfSize), up, glm::vec2(tileCount,  tileCount) },
+        { glm::vec3(-halfSize, 0.0f,  halfSize), up, glm::vec2(0.0f,       tileCount) },
     };
     unsigned int idx[6] = { 0, 1, 2,  0, 2, 3 };
 
@@ -212,7 +303,8 @@ Geometry* CreateGroundPlane(float halfSize = 300.0f) {
 }
 
 // -----------------------------------------------------------------------
-// RenderGround — Phong-shaded ground plane, same style as A2 Render()
+// RenderGround — Phong-shaded textured ground plane
+// Binds procedural texture + uploads dynamic firework lights
 // -----------------------------------------------------------------------
 void RenderGround(Geometry* geom, GLuint shader) {
     glUseProgram(shader);
@@ -220,7 +312,7 @@ void RenderGround(Geometry* geom, GLuint shader) {
     glBindBuffer(GL_ARRAY_BUFFER, geom->vbo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, geom->ibo);
 
-    // GroundVertex layout: pos(vec3 @ 0) | normal(vec3 @ 12)
+    // GroundVertex layout (32 bytes): pos @ 0, normal @ 12, uv @ 24
     GLint pos_att = glGetAttribLocation(shader, "vertex");
     glVertexAttribPointer(pos_att, 3, GL_FLOAT, GL_FALSE, sizeof(GroundVertex), 0);
     glEnableVertexAttribArray(pos_att);
@@ -228,6 +320,12 @@ void RenderGround(Geometry* geom, GLuint shader) {
     GLint norm_att = glGetAttribLocation(shader, "normal");
     glVertexAttribPointer(norm_att, 3, GL_FLOAT, GL_FALSE, sizeof(GroundVertex), (void*)12);
     glEnableVertexAttribArray(norm_att);
+
+    GLint uv_att = glGetAttribLocation(shader, "texcoord");
+    if (uv_att >= 0) {
+        glVertexAttribPointer(uv_att, 2, GL_FLOAT, GL_FALSE, sizeof(GroundVertex), (void*)24);
+        glEnableVertexAttribArray(uv_att);
+    }
 
     glm::mat4 world = glm::mat4(1.0f);
     view_matrix       = camera->GetViewMatrix(NULL);
@@ -237,12 +335,30 @@ void RenderGround(Geometry* geom, GLuint shader) {
     LoadShaderMatrix(shader, view_matrix,       "view_mat");
     LoadShaderMatrix(shader, projection_matrix, "projection_mat");
 
-    // Transform light to view space before passing (same approach as A2)
     glm::vec3 lightPosView = glm::vec3(view_matrix * glm::vec4(scene_light_pos_g, 1.0f));
     LoadShaderVec3(shader, lightPosView, "lightPosView");
-
-    // Dark green — nighttime grass
     LoadShaderVec3(shader, glm::vec3(0.07f, 0.16f, 0.05f), "ground_color");
+
+    // Ground texture on unit 0
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, ground_tex_g);
+    LoadShaderInt(shader, 0, "groundTex");
+
+    // Dynamic point lights from active firework explosions
+    glm::vec3 dynLights[MAX_DYN_LIGHTS];
+    int numLights = particleSys->GetActiveLightPositions(dynLights);
+
+    LoadShaderInt(shader, numLights, "numDynLights");
+    if (numLights > 0) {
+        glm::vec3 dynLightsView[MAX_DYN_LIGHTS];
+        for (int i = 0; i < numLights; i++) {
+            dynLightsView[i] = glm::vec3(view_matrix * glm::vec4(dynLights[i], 1.0f));
+        }
+        GLint loc = glGetUniformLocation(shader, "dynLightsView");
+        if (loc >= 0) {
+            glUniform3fv(loc, numLights, glm::value_ptr(dynLightsView[0]));
+        }
+    }
 
     glDrawElements(GL_TRIANGLES, geom->size, GL_UNSIGNED_INT, 0);
 }
@@ -259,12 +375,12 @@ void InitParticleGPU() {
 
     glGenBuffers(1, &particle_vbo_g);
     glBindBuffer(GL_ARRAY_BUFFER, particle_vbo_g);
-    // Allocate max capacity; data is written by glBufferSubData each frame
     glBufferData(GL_ARRAY_BUFFER, MAX_PARTICLES * sizeof(ParticleVertex), NULL, GL_DYNAMIC_DRAW);
 }
 
 // -----------------------------------------------------------------------
 // RenderParticles — upload updated data and draw with GL_POINTS
+// Binds procedural glow texture
 // -----------------------------------------------------------------------
 void RenderParticles(GLuint shader) {
     if (particleSys->ActiveCount() == 0) return;
@@ -273,7 +389,6 @@ void RenderParticles(GLuint shader) {
     glBindVertexArray(particle_vao_g);
     glBindBuffer(GL_ARRAY_BUFFER, particle_vbo_g);
 
-    // Stream updated particle positions/colours to GPU
     glBufferSubData(GL_ARRAY_BUFFER, 0,
         particleSys->ActiveCount() * sizeof(ParticleVertex),
         particleSys->GetVertices().data());
@@ -299,17 +414,49 @@ void RenderParticles(GLuint shader) {
     LoadShaderMatrix(shader, view_matrix,       "view_mat");
     LoadShaderMatrix(shader, projection_matrix, "projection_mat");
 
+    // Bind procedural glow texture
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, particle_glow_tex_g);
+    LoadShaderInt(shader, 0, "glowTex");
+
     glEnable(GL_PROGRAM_POINT_SIZE);
     glDrawArrays(GL_POINTS, 0, particleSys->ActiveCount());
 }
 
 // -----------------------------------------------------------------------
+// UpdateChoreography — auto-launches mixed fireworks on a timer
+// -----------------------------------------------------------------------
+void UpdateChoreography(double now) {
+    if (now < choreo_next_time_g) return;
+
+    FireworkType seq[5] = {
+        FIREWORK_STARBURST, FIREWORK_FOUNTAIN,
+        FIREWORK_TRAIL,     FIREWORK_CASCADE,
+        FIREWORK_STARBURST
+    };
+
+    float x = (float)(rand() % 180) - 90.0f;
+    float z = (float)(rand() % 180) - 90.0f;
+    int   s = choreo_idx_g % 5;
+
+    particleSys->Launch(glm::vec3(x, 0.0f, z), seq[s]);
+
+    if (s == 4) {
+        float x2 = (float)(rand() % 180) - 90.0f;
+        float z2 = (float)(rand() % 180) - 90.0f;
+        particleSys->Launch(glm::vec3(x2, 0.0f, z2), FIREWORK_CASCADE);
+    }
+
+    choreo_idx_g++;
+    choreo_next_time_g = now + 2.0 + (double)(rand() % 200) / 100.0;
+}
+
+// -----------------------------------------------------------------------
 // Keyboard callback — mirrors A2 style
 // -----------------------------------------------------------------------
-void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+void KeyCallback(GLFWwindow* win, int key, int scancode, int action, int mods) {
     if (action == GLFW_RELEASE) return;
 
-    // Camera controls — 1 degree increments
     if (key == GLFW_KEY_UP)    camera->Pitch( 1.0f);
     if (key == GLFW_KEY_DOWN)  camera->Pitch(-1.0f);
     if (key == GLFW_KEY_LEFT)  camera->Yaw(  -1.0f);
@@ -319,19 +466,30 @@ void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
     if (key == GLFW_KEY_W)     camera->MoveForward(5.0f);
     if (key == GLFW_KEY_S)     camera->MoveBackward(5.0f);
 
-    // Launch starburst firework at a random XZ launch point
+    float x = (float)(rand() % 160) - 80.0f;
+    float z = (float)(rand() % 160) - 80.0f;
+
     if (key == GLFW_KEY_SPACE || key == GLFW_KEY_1) {
-        float x = (float)(rand() % 120) - 60.0f;
-        float z = (float)(rand() % 120) - 60.0f;
         particleSys->Launch(glm::vec3(x, 0.0f, z), FIREWORK_STARBURST);
-        std::cout << "Starburst launched at (" << x << ", 0, " << z << ")\n";
+        std::cout << "Starburst at (" << x << ", 0, " << z << ")\n";
+    }
+    if (key == GLFW_KEY_2) {
+        particleSys->Launch(glm::vec3(x, 0.0f, z), FIREWORK_FOUNTAIN);
+        std::cout << "Fountain at  (" << x << ", 0, " << z << ")\n";
+    }
+    if (key == GLFW_KEY_3) {
+        particleSys->Launch(glm::vec3(x, 0.0f, z), FIREWORK_TRAIL);
+        std::cout << "Trail rocket at (" << x << ", 0, " << z << ")\n";
+    }
+    if (key == GLFW_KEY_4) {
+        particleSys->Launch(glm::vec3(x, 0.0f, z), FIREWORK_CASCADE);
+        std::cout << "Cascade at   (" << x << ", 0, " << z << ")\n";
     }
 
-    // Quit
-    if (key == GLFW_KEY_Q) glfwSetWindowShouldClose(window, true);
+    if (key == GLFW_KEY_Q) glfwSetWindowShouldClose(win, true);
 }
 
-void ResizeCallback(GLFWwindow* window, int width, int height) {
+void ResizeCallback(GLFWwindow* win, int width, int height) {
     glViewport(0, 0, width, height);
 }
 
@@ -339,15 +497,16 @@ void PrintControls() {
     std::cout << "Renderer: " << glGetString(GL_RENDERER) << "\n";
     std::cout << "OpenGL:   " << glGetString(GL_VERSION)  << "\n";
     std::cout << "GLSL:     " << glGetString(GL_SHADING_LANGUAGE_VERSION) << "\n";
-    std::cout << "\n=== Interactive Fireworks Display — Phase 1 (50%) ===\n";
+    std::cout << "\n=== Interactive Fireworks Display ===\n";
     std::cout << "Arrow Up/Down    : Pitch camera\n";
     std::cout << "Arrow Left/Right : Yaw camera\n";
     std::cout << "A / D            : Roll camera\n";
     std::cout << "W / S            : Move forward / backward\n";
     std::cout << "SPACE or 1       : Launch starburst firework\n";
-    std::cout << "Q                : Quit\n";
-    std::cout << "\nPhase 2 (coming soon): 2=Fountain  3=Rocket  4=Cascade\n";
-    std::cout << "                       Textures, skybox, dynamic lighting\n\n";
+    std::cout << "2                : Launch fountain firework\n";
+    std::cout << "3                : Launch rocket-with-trail firework\n";
+    std::cout << "4                : Launch cascade firework\n";
+    std::cout << "Q                : Quit\n\n";
 }
 
 // -----------------------------------------------------------------------
@@ -357,7 +516,6 @@ int main(void) {
     srand((unsigned int)time(NULL));
 
     try {
-        // --- GLFW initialisation ---
         if (!glfwInit()) {
             throw(std::runtime_error("Could not initialize GLFW"));
         }
@@ -371,7 +529,6 @@ int main(void) {
 
         glfwMakeContextCurrent(window);
 
-        // --- GLEW initialisation ---
         glewExperimental = GL_TRUE;
         GLenum err = glewInit();
         if (err != GLEW_OK) {
@@ -379,73 +536,66 @@ int main(void) {
                   (const char*)glewGetErrorString(err)));
         }
 
-        // --- OpenGL state ---
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glDisable(GL_CULL_FACE);
+        glEnable(GL_PROGRAM_POINT_SIZE);
 
-        // --- Camera — positioned in front of the display area, looking inward ---
         camera = new Camera();
         camera->SetCamera(
-            glm::vec3(  0.0f, 80.0f, 250.0f),  // eye
-            glm::vec3(  0.0f, 60.0f,   0.0f),  // look-at
-            glm::vec3(  0.0f,  1.0f,   0.0f)); // up
+            glm::vec3(  0.0f, 80.0f, 250.0f),
+            glm::vec3(  0.0f, 60.0f,   0.0f),
+            glm::vec3(  0.0f,  1.0f,   0.0f));
         camera->SetPerspectiveView(camera_fov_g,
             (float)window_width_g / (float)window_height_g,
             camera_near_clip_g, camera_far_clip_g);
 
-        // --- Load shaders ---
         GLuint groundShader   = LoadShaders("ground");
         GLuint particleShader = LoadShaders("particle");
 
-        // --- Create geometry ---
         Geometry* ground = CreateGroundPlane(300.0f);
 
-        // --- Particle system ---
+        ground_tex_g        = CreateGroundTexture();
+        particle_glow_tex_g = CreateParticleGlowTexture();
+
         particleSys = new ParticleSystem();
         InitParticleGPU();
 
-        // --- GLFW callbacks ---
         glfwSetKeyCallback(window, KeyCallback);
         glfwSetFramebufferSizeCallback(window, ResizeCallback);
 
         PrintControls();
 
-        // Auto-launch a few fireworks so the scene is active from the start
+        // Auto-launch a variety of fireworks so the scene is active immediately
+        float startPos[4][2] = { {-50.0f,-30.0f}, {50.0f,-30.0f}, {0.0f,40.0f}, {-30.0f,60.0f} };
+        FireworkType startTypes[4] = { FIREWORK_STARBURST, FIREWORK_CASCADE,
+                                       FIREWORK_TRAIL,     FIREWORK_FOUNTAIN };
         for (int i = 0; i < 4; i++) {
-            float x = (float)(rand() % 100) - 50.0f;
-            float z = (float)(rand() % 100) - 50.0f;
-            particleSys->Launch(glm::vec3(x, 0.0f, z), FIREWORK_STARBURST);
+            particleSys->Launch(glm::vec3(startPos[i][0], 0.0f, startPos[i][1]), startTypes[i]);
         }
 
-        lastTime_g = glfwGetTime();
+        lastTime_g         = glfwGetTime();
+        choreo_next_time_g = lastTime_g + 3.0;
 
-        // -----------------------------------------------------------------------
-        // Main render loop
-        // -----------------------------------------------------------------------
         while (!glfwWindowShouldClose(window)) {
 
-            // Delta time
             double now = glfwGetTime();
             float  dt  = (float)(now - lastTime_g);
             lastTime_g = now;
-            if (dt > 0.05f) dt = 0.05f; // cap at 50 ms to prevent physics blow-up
+            if (dt > 0.05f) dt = 0.05f;
 
-            // Advance simulation
             particleSys->Update(dt);
+            UpdateChoreography(now);
 
-            // Clear
             glClearColor(background_g.r, background_g.g, background_g.b, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            // --- Ground (opaque — depth writes ON, blending OFF) ---
+            // Ground (opaque)
             glDisable(GL_BLEND);
             glDepthMask(GL_TRUE);
             RenderGround(ground, groundShader);
 
-            // --- Particles (transparent — additive blending, depth writes OFF) ---
-            // Additive blending: src*srcAlpha + dst*1  =>  bright glowing particles
-            // depth writes off so particles don't occlude each other
+            // Particles (additive blending)
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE);
             glDepthMask(GL_FALSE);
@@ -456,7 +606,6 @@ int main(void) {
             glfwSwapBuffers(window);
         }
 
-        // Cleanup
         delete camera;
         delete particleSys;
         delete ground;

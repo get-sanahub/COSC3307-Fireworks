@@ -1,12 +1,14 @@
 #version 330
 
-// Ground plane vertex — position + normal (no texcoords yet; Phase 2)
+// Ground plane vertex — position, normal, texture coordinate.
 in vec3 vertex;
 in vec3 normal;
+in vec2 texcoord;   // Phase 2: UV for ground texture
 
 // Passed to fragment shader for per-fragment Phong lighting
 out vec3 vFragPos;
 out vec3 vFragNorm;
+out vec2 vUV;
 
 uniform mat4 world_mat;
 uniform mat4 view_mat;
@@ -19,6 +21,7 @@ void main()
     // Normal matrix = transpose(inverse(MV)) — handles non-uniform scale correctly
     vFragNorm   = vec3(transpose(inverse(view_mat * world_mat)) * vec4(normal, 0.0));
     vFragPos    = vec3(vtxPos);
+    vUV         = texcoord;
 
     gl_Position = projection_mat * vtxPos;
 }

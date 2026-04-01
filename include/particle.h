@@ -2,9 +2,9 @@
 COSC 3307 - Project: Interactive Fireworks Display
 Particle system - header
 
-Particle pool manages rockets (launch phase) and spark particles (explosion phase).
-Phase 1 (50%): Starburst firework type.
-Phase 2 (TODO): Fountain, Rocket-with-trail, Cascade types + textures + dynamic lights.
+Phase 1: Starburst firework.
+Phase 2: Fountain (continuous ground emitter), Rocket-with-Trail, Cascade (multi-burst),
+         plus dynamic point-light positions exposed to main for ground shading.
 */
 #ifndef PARTICLE_H_
 #define PARTICLE_H_
@@ -15,45 +15,49 @@ Phase 2 (TODO): Fountain, Rocket-with-trail, Cascade types + textures + dynamic 
 #include <vector>
 
 // -----------------------------------------------------------------------
-// Maximum pool sizes
+// Pool sizes
 // -----------------------------------------------------------------------
-static const int MAX_PARTICLES = 3000;
-static const int MAX_ROCKETS   = 32;
+static const int MAX_PARTICLES  = 5000;
+static const int MAX_ROCKETS    = 64;   // larger pool: cascade spawns sub-rockets
+static const int MAX_DYN_LIGHTS = 8;   // max firework positions sent to ground shader
 
 // -----------------------------------------------------------------------
-// Firework types — only STARBURST implemented in Phase 1
+// Firework types
 // -----------------------------------------------------------------------
 enum FireworkType {
-    FIREWORK_STARBURST = 0
-    // FIREWORK_FOUNTAIN  = 1   // Phase 2
-    // FIREWORK_ROCKET    = 2   // Phase 2
-    // FIREWORK_CASCADE   = 3   // Phase 2
+    FIREWORK_STARBURST = 0,  // rocket explodes into sphere of sparks
+    FIREWORK_FOUNTAIN  = 1,  // continuous ground emitter, narrow upward cone
+    FIREWORK_TRAIL     = 2,  // rocket leaves white-orange trail, then starburst
+    FIREWORK_CASCADE   = 3   // rocket bursts into sparks + 3-5 secondary mini-rockets
 };
 
 // -----------------------------------------------------------------------
-// A single spark particle (post-explosion)
+// Spark particle (post-explosion or fountain/trail)
 // -----------------------------------------------------------------------
 struct Particle {
     glm::vec3 position;
     glm::vec3 velocity;
     glm::vec3 color;    // base RGB
-    float     alpha;    // fades 1 -> 0 as particle dies
-    float     life;     // remaining life in seconds
-    float     maxLife;  // total lifespan in seconds
+    float     alpha;    // fades 1 -> 0
+    float     life;     // remaining life (seconds)
+    float     maxLife;  // total lifespan (seconds)
     float     size;     // rendered point size in pixels
     bool      active;
 };
 
 // -----------------------------------------------------------------------
-// Rocket — flies upward, then explodes into sparks
+// Rocket — flies upward then explodes (or acts as fountain emitter)
 // -----------------------------------------------------------------------
 struct Rocket {
     glm::vec3    position;
     glm::vec3    velocity;
-    glm::vec3    color;     // colour passed on to explosion sparks
-    float        life;      // countdown to explosion (seconds)
+    glm::vec3    color;
+    float        life;         // countdown to explosion / deactivation
     bool         active;
     FireworkType type;
+    float        trailTimer;   // TRAIL: time until next trail spark
+    bool         isCascadeSecondary; // CASCADE sub-rockets don't recurse
+    float        lightLife;    // seconds the explosion glow lingers (for dynamic lights)
 };
 
 // -----------------------------------------------------------------------
@@ -62,12 +66,12 @@ struct Rocket {
 // -----------------------------------------------------------------------
 struct ParticleVertex {
     glm::vec3 position;  // offset  0 — 12 bytes
-    glm::vec4 color;     // offset 12 — 16 bytes  (alpha used for fade)
+    glm::vec4 color;     // offset 12 — 16 bytes
     float     size;      // offset 28 —  4 bytes
 };                       // total  32 bytes
 
 // -----------------------------------------------------------------------
-// ParticleSystem — manages particle + rocket pools
+// ParticleSystem
 // -----------------------------------------------------------------------
 class ParticleSystem {
 public:
@@ -83,8 +87,12 @@ public:
     // CPU-side vertex array ready to upload to GPU
     const std::vector<ParticleVertex>& GetVertices() const { return vertices_; }
 
-    // Number of active (alive) particles this frame
+    // Number of active particles this frame
     int ActiveCount() const { return activeCount_; }
+
+    // Fill out[] with world-space positions of active explosion light sources.
+    // Returns number of entries written (0 to MAX_DYN_LIGHTS).
+    int GetActiveLightPositions(glm::vec3 out[MAX_DYN_LIGHTS]) const;
 
 private:
     Particle particles_[MAX_PARTICLES];
@@ -92,10 +100,13 @@ private:
     std::vector<ParticleVertex> vertices_;
     int activeCount_;
 
-    // Spawn sparks from an exploding rocket
-    void Explode(const Rocket& rocket);
+    // Explode a rocket into spark particles
+    void Explode(const Rocket& rocket, int numSparks);
 
-    // Find the next free slot in each pool
+    // Emit fountain sparks each frame
+    void EmitFountainSparks(Rocket& r, float dt);
+
+    // Pool helpers
     int FindFreeParticle();
     int FindFreeRocket();
 };

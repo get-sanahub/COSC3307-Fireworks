@@ -3,19 +3,18 @@
 in  vec4 vColor;
 out vec4 fragColor;
 
+// Phase 2: procedural glow texture (64x64 circular alpha gradient)
+// Sampled via gl_PointCoord (point-sprite UV, (0,0) top-left to (1,1) bottom-right).
+uniform sampler2D glowTex;
+
 void main()
 {
-    // gl_PointCoord is (0,0) top-left, (1,1) bottom-right for the point sprite.
-    // Map to [-0.5, 0.5] and compute distance from centre.
-    vec2  coord = gl_PointCoord - vec2(0.5);
-    float dist  = length(coord);
+    vec4 glow = texture(glowTex, gl_PointCoord);
 
-    // Discard the corners so the point renders as a circle, not a square.
-    if (dist > 0.5) discard;
+    // Discard transparent edge fragments so additive blending doesn't accumulate
+    // invisible quads everywhere.
+    if (glow.a < 0.01) discard;
 
-    // Quadratic fall-off: bright at centre, fades to edge — creates a soft glow.
-    float t         = 1.0 - (dist * 2.0);
-    float intensity = t * t;
-
-    fragColor = vec4(vColor.rgb, vColor.a * intensity);
+    // Modulate particle colour by the glow alpha mask
+    fragColor = vec4(vColor.rgb, vColor.a * glow.a);
 }
