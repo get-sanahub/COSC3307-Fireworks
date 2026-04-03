@@ -10,11 +10,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------
 set(SOURCES
     main.cpp
+    src/app.cpp
+    src/scene.cpp
+    src/shader_utils.cpp
     src/camera.cpp
     src/particle.cpp
 )
 
 set(HEADERS
+    include/app.h
+    include/scene.h
+    include/shader_utils.h
     include/camera.h
     include/particle.h
 )
@@ -25,6 +31,8 @@ set(SHADERS
     resource/particle.frag
     resource/ground.vert
     resource/ground.frag
+    resource/skybox.vert
+    resource/skybox.frag
 )
 
 add_executable(${PROJECT_NAME}
@@ -53,6 +61,11 @@ target_link_libraries(${PROJECT_NAME} PRIVATE OpenGL::GL)
 # Same library path as used in A1 / A2 / Tutorials.
 # Change this if your library folder is in a different location.
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# SET THIS to the path of the course libraries folder on your machine.
+# It should contain subfolders: include/, lib/, bin/
+# Example: "C:/COSC3307/libraries/libraries"
+# ---------------------------------------------------------
 set(LIBRARY_PATH "C:/Users/sanam/OneDrive - Nipissing University/Desktop/3D_computer.graphics/libraries/libraries"
     CACHE PATH "Path to the provided libraries folder (include/, lib/, bin/)")
 
@@ -73,6 +86,12 @@ if(WIN32)
         ${SOIL_LIBRARY}
     )
 
+    # Copy resource folder (shaders) next to the executable — works on any machine
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${PROJECT_SOURCE_DIR}/resource"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/resource")
+
     # Copy runtime DLLs next to the executable
     foreach(dll glew32.dll)
         if(EXISTS "${LIBRARY_PATH}/bin/${dll}")
@@ -88,7 +107,9 @@ if(WIN32)
         endif()
     endforeach()
 
-    set_target_properties(${PROJECT_NAME} PROPERTIES DEBUG_POSTFIX "_d")
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        DEBUG_POSTFIX "_d"
+        VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
 
 else()
     find_package(GLEW REQUIRED)

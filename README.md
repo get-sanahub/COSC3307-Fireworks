@@ -1,28 +1,38 @@
-# Interactive Fireworks Display
-COSC 3307 - 3D Computer Graphics | Nipissing University
+# COSC 3307 – Interactive Fireworks Display
+3D Computer Graphics | Nipissing University
 
-A real-time 3D fireworks simulation using C++ and OpenGL. Rockets launch into the night sky and explode into colourful particle bursts with realistic physics.
+Real-time 3D fireworks simulation built with C++ and OpenGL 3.3.
+
+## Features
+- Four firework types: Starburst, Fountain, Trail Rocket, Cascade
+- Phong shading (ambient + diffuse + specular) on 3D scene objects
+- 3D scene with fountain vase, roads, human figures, and moon
+- Billboard quad particles with additive blending
+- Dynamic explosion lighting, procedural grass texture, night sky
 
 ## Controls
 
 | Key | Action |
-|---|---|
-| Arrow keys | Rotate camera |
-| W / S | Move forward / backward |
-| A / D | Roll camera |
-| SPACE or 1 | Launch firework |
-| Q | Quit |
+|-----|--------|
+| `1` / `Space` | Starburst |
+| `2` | Fountain |
+| `3` | Trail rocket (Phong demo) |
+| `4` | Cascade |
+| Arrow keys | Camera pitch / yaw |
+| `W` / `S` | Move forward / back |
+| `A` / `D` | Roll |
+| `Q` | Quit |
 
-## How to Build
+## Build
 
-Requires Visual Studio 2022 and CMake.
+Requires CMake 3.10+ and Visual Studio 2022.
 
 ```
-mkdir build
-cd build
-cmake ..
+mkdir Build && cd Build
+cmake .. -G "Visual Studio 17 2022"
 cmake --build . --config Debug
+cd Debug && Fireworks_d.exe
 ```
 
-## Libraries Used
-- OpenGL, GLEW, GLFW, GLM, SOIL
+## Libraries
+OpenGL 3.3, GLFW 3, GLEW, GLM 0.9.5.4
